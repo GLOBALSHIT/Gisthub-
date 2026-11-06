@@ -108,7 +108,6 @@ label.f{display:block;font-size:13px;font-weight:700;margin:12px 0 5px}
 .auth .logo{font-size:30px;display:block;text-align:center;margin-bottom:4px}
 .auth p.c{text-align:center;color:var(--mute);margin-bottom:12px}
 .err{color:var(--red);font-size:13px;margin-top:8px;min-height:18px}
-.ok{color:#1a8a4a;font-size:14px;margin-top:8px}
 .spin{width:22px;height:22px;border:3px solid var(--blue-soft);border-top-color:var(--blue);border-radius:50%;margin:18px auto;animation:sp .8s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 #toast{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:9px 16px;border-radius:999px;font-size:14px;z-index:99;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
@@ -130,7 +129,6 @@ body.chatting main{padding:0}
  main{max-width:620px;width:100%;padding:16px 18px 40px;min-height:100vh;border-left:1px solid var(--line);border-right:1px solid var(--line)}
  .chat{height:calc(100vh - 32px)}
  body.chatting main{padding:16px 18px}
- body.chatting .top{display:none}
  .nt.unread{margin:0 -18px;padding-left:18px;padding-right:18px}
  #toast{bottom:30px}
 }
@@ -139,23 +137,21 @@ body.chatting main{padding:0}
 <body>
 <div id="app">
  <aside class="side" id="side"></aside>
- <div><header class="top" id="top"></header><main id="view"><div class="spin" aria-label="Loading"></div></main></div>
+ <div><header class="top" id="top"></header><main id="view"></main></div>
 </div>
 <nav class="bottom" id="bottom" aria-label="Main"></nav>
 <div id="toast" role="status"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (()=>{
 "use strict";
-const SB_URL='https://txfwngecuzwbkhflxnzi.supabase.co';
-const SB_KEY='sb_publishable_nIzEmvlA9eqlbcd5zsL6tg_78Oyd0aH'; /* publishable key: safe in frontend, data is protected by RLS */
-const PAGE=12,PCOLS='id,username,bio,avatar_url,role,created_at';
+/* GistHub: runs fully in the browser. Accounts, posts, photos and messages are saved on this device (localStorage). No server needed. */
+const KEY='gisthub_v2',SKEY='gisthub_session_v2',PAGE=12;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-if(!window.supabase){$('#view').innerHTML='<div class="empty"><b>Could not load GistHub</b>Check your internet connection and refresh the page.</div>';return}
-const sb=supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-
+const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4);
+const hash=s=>{let a=0xdeadbeef,b=0x41c6ce57;for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);a=Math.imul(a^c,2654435761);b=Math.imul(b^c,1597334677)}a=Math.imul(a^(a>>>16),2246822507)^Math.imul(b^(b>>>13),3266489909);b=Math.imul(b^(b>>>16),2246822507)^Math.imul(a^(a>>>13),3266489909);return (4294967296*(2097151&b)+(a>>>0)).toString(36)};
+const now=()=>Date.now();
 const IC={
 home:'<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
 search:'<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
@@ -177,49 +173,65 @@ x:'<path d="M18 6L6 18M6 6l12 12"/>'
 };
 const ic=(n,s=22)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
 
-/* ---------- state ---------- */
-const S={me:null,fr:[],cnt:{n:0,c:0,f:0},wa:'2348000000000',tab:'latest',ptab:'posts',mode:'login',img:null,av:null,adimg:null,adm:'users',q:'',busy:false,ch:null};
-const PC={},POSTS={},seenMsg=new Set();
-let io=null,feed=null,lastKey='',rtok=0,sTok=0,sTimer=0,chatInfo=null;
+/* ---------- data ---------- */
+const blank=()=>({users:{},posts:[],comments:[],likes:[],friends:[],msgs:[],notifs:[],ads:[],settings:{wa:''}});
+function load(){try{const d=JSON.parse(localStorage.getItem(KEY));if(d&&d.users)return Object.assign(blank(),d)}catch(e){}return blank()}
+let db=load(),io=null,lastKey='';
+function save(){try{localStorage.setItem(KEY,JSON.stringify(db));return true}catch(e){toast('Device storage is full. Delete some photos or posts.');return false}}
+const state={tab:'latest',ptab:'posts',mode:'login',img:null,av:null,adimg:null,q:'',adm:'users',items:[],n:0,busy:false};
 
 /* ---------- helpers ---------- */
-const ago=t=>{const s=(Date.now()-new Date(t))/1e3;if(s<60)return'now';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';if(s<604800)return Math.floor(s/86400)+'d';return new Date(t).toLocaleDateString([],{day:'numeric',month:'short'})};
+const getSession=()=>{try{return localStorage.getItem(SKEY)}catch(e){return null}};
+const me=()=>db.users[getSession()]||null;
+const byName=n=>Object.values(db.users).find(u=>u.username.toLowerCase()===String(n).toLowerCase());
+const fr=(a,b)=>db.friends.find(f=>(f.from===a&&f.to===b)||(f.from===b&&f.to===a));
+const friendIds=id=>db.friends.filter(f=>f.status==='accepted'&&(f.from===id||f.to===id)).map(f=>f.from===id?f.to:f.from).filter(i=>db.users[i]);
+const thread=(a,b)=>db.msgs.filter(x=>(x.from===a&&x.to===b)||(x.from===b&&x.to===a)).sort((x,y)=>x.t-y.t);
+const ago=t=>{const s=(now()-t)/1e3;if(s<60)return'now';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';if(s<604800)return Math.floor(s/86400)+'d';return new Date(t).toLocaleDateString([],{day:'numeric',month:'short'})};
 const clock=t=>{const d=new Date(t),tm=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return d.toDateString()===new Date().toDateString()?tm:d.toLocaleDateString([],{day:'numeric',month:'short'})+', '+tm};
 const route=()=>{const p=(location.hash||'#/home').slice(2).split('/');return{a:p[0]||'home',b:decodeURIComponent(p.slice(1).join('/'))}};
 const navTo=h=>{if(location.hash===h)render();else location.hash=h};
-let tt;function toast(m){const e=$('#toast');e.textContent=m;e.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>e.classList.remove('on'),2800)}
+let tt;function toast(m){const e=$('#toast');e.textContent=m;e.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>e.classList.remove('on'),2600)}
 const needLogin=()=>{toast('Log in to continue');location.hash='#/auth'};
 const bd=(n,c='')=>n?`<span class="bd ${c}">${n>99?'99+':n}</span>`:'';
 const empty=(t,s='',btn='')=>`<div class="empty"><b>${t}</b>${s}${btn}</div>`;
-function errMsg(e){const m=(e&&e.message)||String(e);
- if(/row-level security|permission denied/i.test(m))return'You do not have permission to do that.';
- if(/schema cache|does not exist|PGRST20/i.test(m))return'Database is not set up yet. Run schema.sql in the Supabase SQL Editor.';
- if(/failed to fetch|networkerror|load failed/i.test(m))return'No connection. Check your internet and try again.';
- return m}
-function avatar(u,c=''){u=u||{};const l=esc((u.username||'?')[0].toUpperCase());return u.avatar_url?`<img class="av ${c}" src="${esc(u.avatar_url)}" alt="" loading="lazy" decoding="async">`:`<span class="av ${c}">${l}</span>`}
+function notify(to,type,from,ref){if(to===from)return;db.notifs.push({id:uid(),to,from,type,ref:ref||'',t:now(),read:false})}
+function avatar(u,c=''){u=u||{};const l=esc((u.username||'?')[0].toUpperCase());return u.avatar?`<img class="av ${c}" src="${u.avatar}" alt="" loading="lazy" decoding="async">`:`<span class="av ${c}">${l}</span>`}
 function shrink(file,max,q,sq){return new Promise((res,rej)=>{
  if(!/^image\/(jpeg|png|webp)$/.test(file.type))return rej('Choose a JPG, PNG or WebP image.');
- if(file.size>12e6)return rej('Image is too large. Maximum is 12 MB.');
+ if(file.size>15e6)return rej('Image is too large. Maximum is 15 MB.');
  const img=new Image(),url=URL.createObjectURL(file);
  img.onload=()=>{let w=img.width,h=img.height,sx=0,sy=0,sw=w,sh=h;
   if(sq){const s=Math.min(w,h);sx=(w-s)/2;sy=(h-s)/2;sw=sh=s;w=h=Math.min(max,s)}
   else{const k=Math.min(1,max/Math.max(w,h));w=Math.round(w*k);h=Math.round(h*k)}
   const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,sx,sy,sw,sh,0,0,w,h);URL.revokeObjectURL(url);
-  c.toBlob(b=>b?res({blob:b,w,h,url:URL.createObjectURL(b)}):rej('Could not process that image.'),'image/jpeg',q)};
+  res({src:c.toDataURL('image/jpeg',q),w,h})};
  img.onerror=()=>{URL.revokeObjectURL(url);rej('Could not read that image.')};img.src=url})}
-async function upload(bucket,path,blob,upsert){const{error}=await sb.storage.from(bucket).upload(path,blob,{contentType:'image/jpeg',cacheControl:'31536000',upsert:!!upsert});if(error)throw error;return sb.storage.from(bucket).getPublicUrl(path).data.publicUrl}
-const storagePath=(url,bucket)=>{const i=String(url||'').indexOf('/object/public/'+bucket+'/');return i<0?null:url.slice(i+('/object/public/'+bucket+'/').length).split('?')[0]};
-const waLink=t=>'https://wa.me/'+String(S.wa).replace(/\D/g,'')+'?text='+encodeURIComponent(t);
-async function loadProfiles(ids){const miss=[...new Set(ids)].filter(i=>i&&!PC[i]);if(!miss.length)return;const{data}=await sb.from('profiles').select(PCOLS).in('id',miss);(data||[]).forEach(p=>PC[p.id]=p)}
-async function getProfileByName(n){const{data}=await sb.from('profiles').select(PCOLS).eq('username',n).maybeSingle();if(data)PC[data.id]=data;return data}
+const waLink=t=>'https://wa.me/'+String(db.settings.wa).replace(/\D/g,'')+'?text='+encodeURIComponent(t);
+function counts(){const m=me();if(!m)return{n:0,c:0,f:0};return{n:db.notifs.filter(x=>x.to===m.id&&!x.read).length,c:db.msgs.filter(x=>x.to===m.id&&!x.read).length,f:db.friends.filter(x=>x.to===m.id&&x.status==='pending').length}}
 
-/* ---------- friendships ---------- */
-const frOf=id=>S.fr.find(f=>f.requester===id||f.addressee===id);
-const friendIds=()=>S.me?S.fr.filter(f=>f.status==='accepted').map(f=>f.requester===S.me.id?f.addressee:f.requester):[];
-async function refreshFr(){if(!S.me)return;const{data}=await sb.from('friendships').select('*').or('requester.eq.'+S.me.id+',addressee.eq.'+S.me.id);S.fr=data||[];S.cnt.f=S.fr.filter(f=>f.status==='pending'&&f.addressee===S.me.id).length}
-function relation(u){if(!S.me)return'guest';if(S.me.id===u.id)return'self';const f=frOf(u.id);if(!f)return'none';if(f.status==='accepted')return'friends';return f.requester===S.me.id?'sent':'received'}
+/* ---------- components ---------- */
+function postHTML(p,full){
+ const u=db.users[p.uid]||{username:'deleted'},m=me();
+ const lk=db.likes.filter(l=>l.pid===p.id),liked=m&&lk.some(l=>l.uid===m.id),cc=db.comments.filter(c=>c.pid===p.id).length;
+ const canDel=m&&(m.id===p.uid||m.role==='admin');
+ return `<article class="post" data-post="${p.id}"${full?' data-full="1"':''}>
+ <div class="ph"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.username)}">${avatar(u)}</a><div class="pm"><a class="un ellip" href="#/u/${esc(u.username)}">${esc(u.username)}</a><span class="mu">${ago(p.t)}</span></div>${canDel?`<button class="ghost" data-act="delpost" data-id="${p.id}" aria-label="Delete post">${ic('trash',18)}</button>`:''}</div>
+ ${p.text?`<p class="pt"${full?'':` data-go="#/p/${p.id}"`}>${esc(p.text)}</p>`:''}
+ ${p.img?`<img class="pimg" src="${p.img.src}" loading="lazy" decoding="async" alt="" width="${p.img.w}" height="${p.img.h}" style="aspect-ratio:${p.img.w}/${p.img.h}">`:''}
+ <div class="pa"><button class="${liked?'liked':''}" data-act="like" data-id="${p.id}" aria-label="Like">${ic('heart',20)}<span>${lk.length}</span></button><a href="#/p/${p.id}" aria-label="Comments">${ic('chat',20)}<span>${cc}</span></a><button data-act="share" data-id="${p.id}" aria-label="Share link">${ic('share',20)}</button></div></article>`}
+function refreshPost(id){const p=db.posts.find(x=>x.id===id);if(!p)return;document.querySelectorAll(`[data-post="${id}"]`).forEach(el=>{el.outerHTML=postHTML(p,!!el.dataset.full)})}
+function adHTML(a){
+ const btn=a.link?`<a class="btn sm" href="${esc(a.link)}" target="_blank" rel="noopener nofollow sponsored">Learn more</a>`:`<button class="btn sm" data-act="adwa" data-name="${esc(a.name)}">Chat on WhatsApp</button>`;
+ return `<article class="post ad"><span class="tag">Sponsored</span><img class="pimg" src="${a.img.src}" loading="lazy" decoding="async" alt="" width="${a.img.w}" height="${a.img.h}" style="aspect-ratio:${a.img.w}/${a.img.h}"><h3>${esc(a.name)}</h3><p>${esc(a.desc)}</p>${btn}</article>`}
+const prevHTML=()=>state.img?`<div class="pv"><img src="${state.img.th}" alt=""><button type="button" data-act="rmimg" aria-label="Remove image">${ic('x',14)}</button></div>`:'';
+function composer(){
+ const m=me();
+ if(!m)return `<div class="comp g"><b>What's your gist today?</b><span class="mu">Log in to post, like and comment.</span><a class="btn sm" href="#/auth">Log in or sign up</a></div>`;
+ return `<form class="comp" data-form="post">${avatar(m)}<div class="cb"><textarea name="t" placeholder="What's your gist today?" maxlength="1000" rows="2" aria-label="Write a post"></textarea><div id="prev">${prevHTML()}</div><div class="crow"><label class="ghost" aria-label="Attach image">${ic('image',24)}<input type="file" accept="image/jpeg,image/png,image/webp" data-file="post" hidden></label><button class="btn sm" id="pbtn">Post</button></div></div></form>`}
+function relation(m,u){if(!m)return'guest';if(m.id===u.id)return'self';const f=fr(m.id,u.id);if(!f)return'none';if(f.status==='accepted')return'friends';return f.from===m.id?'sent':'received'}
 function friendBtn(u,big){
- const r=relation(u),s=big?'':' sm',i=`data-id="${u.id}"`;
+ const m=me(),r=relation(m,u),s=big?'':' sm',i=`data-id="${u.id}"`;
  if(r==='self')return'';
  if(r==='guest'||r==='none')return `<button class="btn${s}" data-act="addfriend" ${i}>Add friend</button>`;
  if(r==='sent')return `<button class="btn gray${s}" data-act="cancelreq" ${i}>Cancel request</button>`;
@@ -228,268 +240,150 @@ function friendBtn(u,big){
 const userRow=(u,extra)=>u?`<div class="row"><a href="#/u/${esc(u.username)}">${avatar(u)}</a><div class="grow"><a class="un ellip" href="#/u/${esc(u.username)}" style="display:block">${esc(u.username)}</a><div class="mu ellip">${esc(u.bio||'')}</div></div><div class="acts">${extra??friendBtn(u)}</div></div>`:'';
 const notFound=()=>empty('Not found','This page does not exist or was removed.','<a class="btn" href="#/home">Go home</a>');
 
-/* ---------- posts ---------- */
-const norm=(p,liked)=>({id:p.id,user_id:p.user_id,body:p.body,image_url:p.image_url,thumb_url:p.thumb_url,image_w:p.image_w,image_h:p.image_h,created_at:p.created_at,likes:+p.like_count||0,comments:+p.comment_count||0,liked:!!liked});
-function postHTML(p,full){
- const u=PC[p.user_id]||{username:'deleted'},canDel=S.me&&(S.me.id===p.user_id||S.me.role==='admin');
- return `<article class="post" data-post="${p.id}"${full?' data-full="1"':''}>
- <div class="ph"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.username)}">${avatar(u)}</a><div class="pm"><a class="un ellip" href="#/u/${esc(u.username)}">${esc(u.username)}</a><span class="mu">${ago(p.created_at)}</span></div>${canDel?`<button class="ghost" data-act="delpost" data-id="${p.id}" aria-label="Delete post">${ic('trash',18)}</button>`:''}</div>
- ${p.body?`<p class="pt"${full?'':` data-go="#/p/${p.id}"`}>${esc(p.body)}</p>`:''}
- ${p.image_url?`<img class="pimg" src="${esc(p.image_url)}" loading="lazy" decoding="async" alt="" ${p.image_w?`width="${p.image_w}" height="${p.image_h}" style="aspect-ratio:${p.image_w}/${p.image_h}"`:''}>`:''}
- <div class="pa"><button class="${p.liked?'liked':''}" data-act="like" data-id="${p.id}" aria-label="Like">${ic('heart',20)}<span>${p.likes}</span></button><a href="#/p/${p.id}" aria-label="Comments">${ic('chat',20)}<span>${p.comments}</span></a><button data-act="share" data-id="${p.id}" aria-label="Share link">${ic('share',20)}</button></div></article>`}
-function refreshPost(id){const p=POSTS[id];if(!p)return;document.querySelectorAll(`[data-post="${id}"]`).forEach(el=>{el.outerHTML=postHTML(p,!!el.dataset.full)})}
-function adHTML(a){
- const btn=a.link?`<a class="btn sm" href="${esc(a.link)}" target="_blank" rel="noopener nofollow sponsored">Learn more</a>`:`<button class="btn sm" data-act="adwa" data-name="${esc(a.name)}">Chat on WhatsApp</button>`;
- return `<article class="post ad"><span class="tag">Sponsored</span><img class="pimg" src="${esc(a.image_url)}" loading="lazy" decoding="async" alt="" ${a.image_w?`width="${a.image_w}" height="${a.image_h}" style="aspect-ratio:${a.image_w}/${a.image_h}"`:''}><h3>${esc(a.name)}</h3><p>${esc(a.description)}</p>${btn}</article>`}
-const prevHTML=()=>S.img?`<div class="pv"><img src="${S.img.th.url}" alt=""><button type="button" data-act="rmimg" aria-label="Remove image">${ic('x',14)}</button></div>`:'';
-function composer(){
- if(!S.me)return `<div class="comp g"><b>What's your gist today?</b><span class="mu">Log in to post, like and comment.</span><a class="btn sm" href="#/auth">Log in or sign up</a></div>`;
- return `<form class="comp" data-form="post">${avatar(S.me)}<div class="cb"><textarea name="t" placeholder="What's your gist today?" maxlength="1000" rows="2" aria-label="Write a post"></textarea><div id="prev">${prevHTML()}</div><div class="crow"><label class="ghost" aria-label="Attach image">${ic('image',24)}<input type="file" accept="image/jpeg,image/png,image/webp" data-file="post" hidden></label><button class="btn sm" id="pbtn">Post</button></div></div></form>`}
-
-async function fetchPosts(q,from){
- let r=sb.from('posts_feed').select('*');
- if(q.user)r=r.eq('user_id',q.user);
- if(q.ids)r=r.in('user_id',q.ids);
- if(q.photos)r=r.not('image_url','is',null);
- if(q.trending)r=r.gte('created_at',new Date(Date.now()-30*864e5).toISOString()).order('score',{ascending:false});
- r=r.order('created_at',{ascending:false}).range(from,from+PAGE-1);
- const{data,error}=await r;if(error)throw error;
- const rows=data||[];let liked=new Set();
- const[,ls]=await Promise.all([loadProfiles(rows.map(p=>p.user_id)),S.me&&rows.length?sb.from('likes').select('post_id').eq('user_id',S.me.id).in('post_id',rows.map(p=>p.id)):null]);
- if(ls&&ls.data)liked=new Set(ls.data.map(l=>l.post_id));
- return rows.map(p=>(POSTS[p.id]=norm(p,liked.has(p.id))))}
-const feedItem=(kind,p)=>kind==='grid'?`<a href="#/p/${p.id}"><img src="${esc(p.thumb_url||p.image_url)}" loading="lazy" decoding="async" alt="" width="200" height="200"></a>`:
- kind==='admin'?`<div class="row"><div class="grow"><b>${esc((PC[p.user_id]||{}).username||'deleted')}</b> <span class="mu">${ago(p.created_at)}</span><div class="ellip">${esc(p.body||'(photo)')}</div></div><a class="ghost" href="#/p/${p.id}" aria-label="Open">${ic('search',18)}</a><button class="ghost" data-act="delpost" data-id="${p.id}" aria-label="Delete">${ic('trash',18)}</button></div>`:postHTML(p);
-async function loadMore(){
- const F=feed;if(!F||F.loading||F.done)return;F.loading=true;const s=$('#sentinel');
- if(s)s.innerHTML='<div class="spin" aria-label="Loading"></div>';
- try{
-  const rows=await fetchPosts(F.q,F.from);if(F!==feed)return;
-  F.from+=PAGE;const el=$('#feed');let h='';
-  rows.forEach(p=>{h+=feedItem(F.kind,p);F.idx++;if(F.kind==='post'&&F.ads.length&&F.idx%5===0)h+=adHTML(F.ads[(F.idx/5-1)%F.ads.length])});
-  if(el)el.insertAdjacentHTML('beforeend',h);
-  if(rows.length<PAGE){F.done=true;if(s)s.remove();if(io){io.disconnect();io=null}}
-  if(F.from===PAGE&&!rows.length&&el)el.innerHTML=F.emptyHTML;
- }catch(e){if(F===feed&&s)s.innerHTML=`<div class="empty">${esc(errMsg(e))}<br><button class="btn sm gray" data-act="retry" style="margin-top:10px">Try again</button></div>`;F.err=true}
- finally{F.loading=false;if(F===feed&&io&&s&&s.isConnected&&!F.err){io.unobserve(s);io.observe(s)}}}
-function startFeed(q,kind,emptyHTML,ads){
- feed={q,kind,from:0,done:false,loading:false,idx:0,ads:ads||[],emptyHTML,err:false};
- const s=$('#sentinel');
- if(s&&'IntersectionObserver'in window){io=new IntersectionObserver(e=>{if(e[0].isIntersecting)loadMore()},{rootMargin:'500px'});io.observe(s)}else loadMore()}
-async function fetchAds(){const{data}=await sb.from('ads').select('id,name,description,link,image_url,image_w,image_h').eq('published',true).order('created_at',{ascending:false}).limit(10);return data||[]}
-
-/* ---------- search ---------- */
-async function runSearch(){
- const tok=++sTok,q=S.q.trim(),box=$('#sres');if(!box)return;
- let r=sb.from('profiles').select(PCOLS).order('created_at',{ascending:false}).limit(30);
- if(q)r=r.ilike('username','%'+q.replace(/[\\%_]/g,m=>'\\'+m)+'%');
- if(S.me)r=r.neq('id',S.me.id);
- const{data,error}=await r;if(tok!==sTok)return;
- if(error){box.innerHTML=empty('Search failed',esc(errMsg(error)));return}
- (data||[]).forEach(p=>PC[p.id]=p);
- box.innerHTML=(q?'':'<div class="sec-h">People on GistHub</div>')+((data||[]).map(u=>userRow(u)).join('')||empty('No users found','Try a different username.'))}
+/* ---------- feed ---------- */
+function feedList(){const m=me();let L=[...db.posts];
+ if(state.tab==='trending'){const sc=p=>db.likes.filter(l=>l.pid===p.id).length*2+db.comments.filter(c=>c.pid===p.id).length*3;L.sort((a,b)=>sc(b)-sc(a)||b.t-a.t)}
+ else{L.sort((a,b)=>b.t-a.t);if(state.tab==='following'&&m){const f=friendIds(m.id);L=L.filter(p=>f.includes(p.uid))}else if(state.tab==='mine'&&m)L=L.filter(p=>p.uid===m.id)}
+ return L}
+function withAds(L){const ads=state.tab==='mine'?[]:db.ads.filter(a=>a.on),out=[];let k=0;L.forEach((p,i)=>{out.push({p});if(ads.length&&(i+1)%5===0)out.push({ad:ads[k++%ads.length]})});return out}
+function more(){const f=$('#feed'),s=$('#sentinel');if(!f)return;
+ const part=state.items.slice(state.n,state.n+PAGE);state.n+=PAGE;
+ f.insertAdjacentHTML('beforeend',part.map(i=>i.p?postHTML(i.p):adHTML(i.ad)).join(''));
+ if(!state.items.length){const t={following:['No posts from friends yet','Add friends to see their gist here.'],mine:['You have not posted yet','Share your first gist above.']}[state.tab]||['No posts yet','Be the first to share some gist.'];f.innerHTML=empty(t[0],t[1])}
+ if(state.n>=state.items.length&&s){s.remove();if(io){io.disconnect();io=null}}}
 
 /* ---------- pages ---------- */
 const pages={
 home(){const T=[['latest','Latest'],['trending','Trending'],['following','Following'],['mine','My Posts']];
- return `${composer()}<div class="tabs" role="tablist">${T.map(t=>`<button class="tab ${S.tab===t[0]?'on':''}" role="tab" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div><div id="feed"></div><div id="sentinel"><div class="spin" aria-label="Loading"></div></div>`},
-search(){return `<h1>Search</h1><input id="q" class="in" type="search" placeholder="Search people by username" value="${esc(S.q)}" autocomplete="off" aria-label="Search users"><div id="sres"><div class="spin"></div></div>`},
-post(){return `<h1>New gist</h1>${composer()}<p class="mu" style="margin-top:10px">Photos are compressed before upload. Video is not supported yet.</p>`},
-async p(id){
- const{data:row}=await sb.from('posts_feed').select('*').eq('id',id).maybeSingle();if(!row)return notFound();
- const{data:cs}=await sb.from('comments').select('id,user_id,body,created_at').eq('post_id',id).order('created_at').limit(200);
- let liked=false;
- await Promise.all([loadProfiles([row.user_id,...(cs||[]).map(c=>c.user_id)]),S.me?sb.from('likes').select('post_id').eq('post_id',id).eq('user_id',S.me.id).maybeSingle().then(r=>{liked=!!r.data}):0]);
- POSTS[id]=norm(row,liked);const list=cs||[];
- return `<a class="ghost" href="#/home" aria-label="Back">${ic('back')}</a>${postHTML(POSTS[id],true)}<div class="sec-h">Comments (${list.length})</div>
- ${list.map(c=>{const u=PC[c.user_id]||{username:'deleted'},can=S.me&&(S.me.id===c.user_id||S.me.role==='admin');return `<div class="cmt"><a href="#/u/${esc(u.username)}">${avatar(u,'sm')}</a><div class="grow"><a class="un" href="#/u/${esc(u.username)}">${esc(u.username)}</a> <span class="mu">${ago(c.created_at)}</span><p>${esc(c.body)}</p></div>${can?`<button class="ghost" data-act="delcomment" data-id="${c.id}" aria-label="Delete comment">${ic('trash',16)}</button>`:''}</div>`}).join('')||empty('No comments yet','Start the conversation.')}
- ${S.me?`<form class="cin" data-form="comment" data-id="${id}" style="border:0;padding:12px 0"><input class="in" name="t" placeholder="Add a comment" maxlength="500" autocomplete="off" aria-label="Comment"><button class="btn sm">Send</button></form>`:`<div class="card"><a class="btn sm" href="#/auth">Log in to comment</a></div>`}`},
-async u(name){
- const u=await getProfileByName(name);if(!u)return notFound();
- const[,pc,fq]=await Promise.all([S.me?refreshFr():0,sb.from('posts').select('id',{count:'exact',head:true}).eq('user_id',u.id),sb.from('friendships').select('requester,addressee').eq('status','accepted').or('requester.eq.'+u.id+',addressee.eq.'+u.id)]);
- const fids=(fq.data||[]).map(f=>f.requester===u.id?f.addressee:f.requester),own=S.me&&S.me.id===u.id;
- let body='';
- if(S.ptab==='friends'){await loadProfiles(fids);body=fids.length?fids.map(i=>userRow(PC[i])).join(''):empty('No friends yet')}
- else body=`<div id="feed"${S.ptab==='photos'?' class="grid"':''}></div><div id="sentinel"><div class="spin"></div></div>`;
+ return `${composer()}<div class="tabs" role="tablist">${T.map(t=>`<button class="tab ${state.tab===t[0]?'on':''}" role="tab" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div><div id="feed"></div><div id="sentinel"><div class="spin" aria-label="Loading"></div></div>`},
+search(){return `<h1>Search</h1><input id="q" class="in" type="search" placeholder="Search people by username" value="${esc(state.q)}" autocomplete="off" aria-label="Search users"><div id="sres">${searchRes()}</div>`},
+post(){return `<h1>New gist</h1>${composer()}<p class="mu" style="margin-top:10px">Photos are compressed before saving. Video is not supported yet.</p>`},
+p(id){
+ const p=db.posts.find(x=>x.id===id);if(!p)return notFound();const m=me();
+ const cs=db.comments.filter(c=>c.pid===id).sort((a,b)=>a.t-b.t);
+ return `<a class="ghost" href="#/home" aria-label="Back">${ic('back')}</a>${postHTML(p,true)}<div class="sec-h">Comments (${cs.length})</div>
+ ${cs.map(c=>{const u=db.users[c.uid]||{username:'deleted'},can=m&&(m.id===c.uid||m.role==='admin');return `<div class="cmt"><a href="#/u/${esc(u.username)}">${avatar(u,'sm')}</a><div class="grow"><a class="un" href="#/u/${esc(u.username)}">${esc(u.username)}</a> <span class="mu">${ago(c.t)}</span><p>${esc(c.text)}</p></div>${can?`<button class="ghost" data-act="delcomment" data-id="${c.id}" aria-label="Delete comment">${ic('trash',16)}</button>`:''}</div>`}).join('')||empty('No comments yet','Start the conversation.')}
+ ${m?`<form class="cin" data-form="comment" data-id="${id}" style="border:0;padding:12px 0"><input class="in" name="t" placeholder="Add a comment" maxlength="500" autocomplete="off" aria-label="Comment"><button class="btn sm">Send</button></form>`:`<div class="card"><a class="btn sm" href="#/auth">Log in to comment</a></div>`}`},
+u(name){
+ const u=byName(name);if(!u)return notFound();const m=me(),own=m&&m.id===u.id;
+ const posts=db.posts.filter(p=>p.uid===u.id).sort((a,b)=>b.t-a.t),fl=friendIds(u.id);let body;
+ if(state.ptab==='photos'){const ph=posts.filter(p=>p.img);body=ph.length?`<div class="grid">${ph.map(p=>`<a href="#/p/${p.id}"><img src="${p.img.th||p.img.src}" loading="lazy" decoding="async" alt="" width="200" height="200"></a>`).join('')}</div>`:empty('No photos yet')}
+ else if(state.ptab==='friends')body=fl.length?fl.map(id=>userRow(db.users[id])).join(''):empty('No friends yet');
+ else body=posts.length?posts.map(p=>postHTML(p)).join(''):empty('No posts yet');
  const T=[['posts','Posts'],['photos','Photos'],['friends','Friends']];
  return `<div class="prof"><div class="top2">${avatar(u,'lg')}<div class="grow"><h2 class="ellip">${esc(u.username)}</h2>${u.role==='admin'?'<span class="tag">Admin</span>':''}</div></div>
  <p style="margin-top:10px;overflow-wrap:anywhere">${esc(u.bio||'No bio yet.')}</p>
- <div class="stats"><span><b>${pc.count||0}</b> posts</span><span><b>${fids.length}</b> friends</span></div>
+ <div class="stats"><span><b>${posts.length}</b> posts</span><span><b>${fl.length}</b> friends</span></div>
  <div class="pacts">${own?`<a class="btn sec sm" href="#/edit">Edit profile</a><a class="btn gray sm" href="#/friends">Friends</a><button class="btn gray sm" data-act="logout">Log out</button>`:friendBtn(u,1)}</div></div>
- <div class="tabs">${T.map(t=>`<button class="tab ${S.ptab===t[0]?'on':''}" data-act="ptab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>${body}<span id="pu" data-uid="${u.id}" hidden></span>`},
-edit(){S.av=null;const m=S.me;
+ <div class="tabs">${T.map(t=>`<button class="tab ${state.ptab===t[0]?'on':''}" data-act="ptab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>${body}`},
+edit(){const m=me();state.av=null;
  return `<a class="ghost" href="#/u/${esc(m.username)}" aria-label="Back">${ic('back')}</a><h1>Edit profile</h1>
  <form data-form="edit"><div style="display:flex;align-items:center;gap:14px"><span id="avprev">${avatar(m,'lg')}</span><label class="btn sec sm">Change photo<input type="file" accept="image/jpeg,image/png,image/webp" data-file="avatar" hidden></label></div>
  <label class="f" for="un">Username</label><input class="in" id="un" name="u" value="${esc(m.username)}" maxlength="20" autocomplete="off">
  <label class="f" for="bio">Bio</label><textarea class="in" id="bio" name="b" rows="3" maxlength="160">${esc(m.bio||'')}</textarea>
  <div class="err" id="err"></div><button class="btn full" style="margin-top:10px">Save changes</button></form>`},
-async friends(){
- await refreshFr();const m=S.me;
- const inc=S.fr.filter(f=>f.addressee===m.id&&f.status==='pending').map(f=>f.requester),out=S.fr.filter(f=>f.requester===m.id&&f.status==='pending').map(f=>f.addressee),fl=friendIds();
- await loadProfiles([...inc,...out,...fl]);
- const sec=(t,a,none)=>`<div class="sec-h">${t} (${a.length})</div>${a.map(i=>userRow(PC[i])).join('')||none}`;
- return `<h1>Friends</h1>${sec('Incoming requests',inc,'<p class="mu" style="padding:8px 0">No incoming requests.</p>')}${sec('Outgoing requests',out,'<p class="mu" style="padding:8px 0">No outgoing requests.</p>')}${sec('Friends',fl,empty('No friends yet','Find people to add.','<a class="btn sm" href="#/search">Search people</a>'))}`},
-async chats(){
- await refreshFr();const fl=friendIds();
- const[{data:cv},]=await Promise.all([sb.rpc('my_conversations'),loadProfiles(fl)]);
- const map={};(cv||[]).forEach(c=>map[c.other_id]=c);
- const L=fl.map(i=>({u:PC[i],c:map[i]})).filter(x=>x.u).sort((a,b)=>(b.c?new Date(b.c.last_at):0)-(a.c?new Date(a.c.last_at):0));
- return `<h1>Chats</h1>${L.map(x=>`<a class="row" href="#/chat/${x.u.id}">${avatar(x.u)}<div class="grow"><b>${esc(x.u.username)}</b><div class="mu ellip ${x.c&&x.c.unread>0?'strong':''}">${x.c?esc((x.c.last_sender===S.me.id?'You: ':'')+x.c.last_body):'Say hi'}</div></div><div class="rt"><span>${x.c?ago(x.c.last_at):''}</span>${bd(x.c?+x.c.unread:0,'in')}</div></a>`).join('')||empty('No chats yet','Private messages are only for accepted friends.','<a class="btn sm" href="#/search">Find friends</a>')}`},
-async chat(id){
- await refreshFr();await loadProfiles([id]);const u=PC[id];
- if(!u||!friendIds().includes(id))return `<div class="chat">${empty('Messages are for friends only','Become friends with this person to chat privately.','<a class="btn sm" href="#/chats">Back to chats</a>')}</div>`;
- const{data,error}=await sb.from('messages').select('*').or('and(sender.eq.'+S.me.id+',recipient.eq.'+id+'),and(sender.eq.'+id+',recipient.eq.'+S.me.id+')').order('created_at',{ascending:false}).limit(60);
- if(error)return `<div class="chat">${empty('Could not load messages',esc(errMsg(error)))}</div>`;
- const list=(data||[]).reverse();list.forEach(m=>seenMsg.add(m.id));chatInfo={id,oldest:list[0]?list[0].created_at:null,more:(data||[]).length===60};
- return `<div class="chat"><div class="chh"><a class="ghost" href="#/chats" aria-label="Back">${ic('back')}</a><a href="#/u/${esc(u.username)}">${avatar(u,'sm')}</a><a class="un" href="#/u/${esc(u.username)}">${esc(u.username)}</a></div><div class="msgs" id="msgs">${chatInfo.more?'<button class="btn sm gray" data-act="older" style="align-self:center">Load earlier</button>':''}${list.map(bubble).join('')||'<p class="mu none" style="text-align:center;margin:auto">No messages yet. Say hi.</p>'}</div><form class="cin" data-form="chat" data-id="${id}"><input class="in" name="t" placeholder="Message" maxlength="1000" autocomplete="off" aria-label="Message"><button class="btn ic" aria-label="Send">${ic('send',18)}</button></form></div>`},
-async notifs(){
- const{data,error}=await sb.from('notifications').select('id,type,post_id,actor_id,read,created_at,actor:profiles!actor_id(username,avatar_url)').eq('user_id',S.me.id).order('created_at',{ascending:false}).limit(80);
- if(error)return empty('Could not load notifications',esc(errMsg(error)));
- const seen=new Set(),L=(data||[]).filter(n=>{if(n.type!=='message')return true;if(seen.has(n.actor_id))return false;seen.add(n.actor_id);return true}).slice(0,50);
+friends(){
+ const m=me(),inc=db.friends.filter(f=>f.to===m.id&&f.status==='pending'&&db.users[f.from]),out=db.friends.filter(f=>f.from===m.id&&f.status==='pending'&&db.users[f.to]),fl=friendIds(m.id);
+ return `<h1>Friends</h1><div class="sec-h">Incoming requests (${inc.length})</div>${inc.map(f=>userRow(db.users[f.from])).join('')||'<p class="mu" style="padding:8px 0">No incoming requests.</p>'}
+ <div class="sec-h">Outgoing requests (${out.length})</div>${out.map(f=>userRow(db.users[f.to])).join('')||'<p class="mu" style="padding:8px 0">No outgoing requests.</p>'}
+ <div class="sec-h">Friends (${fl.length})</div>${fl.map(id=>userRow(db.users[id])).join('')||empty('No friends yet','Find people to add.','<a class="btn sm" href="#/search">Search people</a>')}`},
+chats(){
+ const m=me(),L=friendIds(m.id).map(id=>{const ms=thread(m.id,id);return{u:db.users[id],last:ms[ms.length-1],un:ms.filter(x=>x.to===m.id&&!x.read).length}}).sort((a,b)=>(b.last?.t||0)-(a.last?.t||0));
+ return `<h1>Chats</h1>${L.map(x=>`<a class="row" href="#/chat/${x.u.id}">${avatar(x.u)}<div class="grow"><b>${esc(x.u.username)}</b><div class="mu ellip ${x.un?'strong':''}">${x.last?esc((x.last.from===m.id?'You: ':'')+x.last.text):'Say hi'}</div></div><div class="rt"><span>${x.last?ago(x.last.t):''}</span>${bd(x.un,'in')}</div></a>`).join('')||empty('No chats yet','Private messages are only for accepted friends.','<a class="btn sm" href="#/search">Find friends</a>')}`},
+chat(id){
+ const m=me(),u=db.users[id];
+ if(!u||!friendIds(m.id).includes(id))return `<div class="chat">${empty('Messages are for friends only','Become friends with this person to chat privately.','<a class="btn sm" href="#/chats">Back to chats</a>')}</div>`;
+ return `<div class="chat"><div class="chh"><a class="ghost" href="#/chats" aria-label="Back">${ic('back')}</a><a href="#/u/${esc(u.username)}">${avatar(u,'sm')}</a><a class="un" href="#/u/${esc(u.username)}">${esc(u.username)}</a></div><div class="msgs" id="msgs">${msgsHTML(id)}</div><form class="cin" data-form="chat" data-id="${id}"><input class="in" name="t" placeholder="Message" maxlength="1000" autocomplete="off" aria-label="Message"><button class="btn ic" aria-label="Send">${ic('send',18)}</button></form></div>`},
+notifs(){
+ const m=me();let L=db.notifs.filter(n=>n.to===m.id).sort((a,b)=>b.t-a.t);const seen=new Set();
+ L=L.filter(n=>{if(n.type!=='message')return true;if(seen.has(n.from))return false;seen.add(n.from);return true}).slice(0,60);
  const tx={friend_request:'sent you a friend request',friend_accept:'accepted your friend request',like:'liked your post',comment:'commented on your post',message:'sent you a message'};
- return `<h1>Notifications</h1>`+(L.length?L.map(n=>{const u=n.actor||{username:'someone'};const href={friend_request:'#/friends',friend_accept:'#/u/'+u.username,like:'#/p/'+n.post_id,comment:'#/p/'+n.post_id,message:'#/chat/'+n.actor_id}[n.type];
-  return `<a class="row nt ${n.read?'':'unread'}" href="${esc(href)}">${avatar(u)}<div class="grow"><b>${esc(u.username)}</b> ${tx[n.type]}<div class="mu">${ago(n.created_at)}</div></div></a>`}).join(''):empty('No notifications yet','Likes, comments, friend requests and messages show up here.'))},
-auth(){const s=S.mode==='signup';
+ return `<h1>Notifications</h1>`+(L.length?L.map(n=>{const u=db.users[n.from]||{username:'someone'};const href={friend_request:'#/friends',friend_accept:'#/u/'+u.username,like:'#/p/'+n.ref,comment:'#/p/'+n.ref,message:'#/chat/'+n.from}[n.type];
+  return `<a class="row nt ${n.read?'':'unread'}" href="${esc(href)}">${avatar(u)}<div class="grow"><b>${esc(u.username)}</b> ${tx[n.type]}<div class="mu">${ago(n.t)}</div></div></a>`}).join(''):empty('No notifications yet','Likes, comments, friend requests and messages show up here.'))},
+auth(){const s=state.mode==='signup';
  return `<div class="auth"><span class="logo">GistHub</span><p class="c">${s?'Create your account':'Welcome back'}</p>
  <form data-form="auth">${s?`<label class="f" for="us">Username</label><input class="in" id="us" name="u" autocomplete="username" maxlength="20" placeholder="Letters, numbers, underscore" required>`:''}
  <label class="f" for="em">Email</label><input class="in" id="em" name="e" type="email" autocomplete="email" required>
  <label class="f" for="pw">Password</label><input class="in" id="pw" name="p" type="password" autocomplete="${s?'new-password':'current-password'}" minlength="6" required>
  <div class="err" id="err"></div><button class="btn full" id="abtn" style="margin-top:8px">${s?'Sign up':'Log in'}</button></form>
  <p class="mu" style="text-align:center;margin-top:14px">${s?'Already have an account?':'New here?'} <button class="un" style="color:var(--blue)" data-act="mode">${s?'Log in':'Create account'}</button></p></div>`},
-async admin(){
- if(!S.me||S.me.role!=='admin')return empty('Admins only','You do not have access to this page.','<a class="btn sm" href="#/home">Go home</a>');
+admin(){
+ const m=me();if(!m||m.role!=='admin')return empty('Admins only','You do not have access to this page.','<a class="btn sm" href="#/home">Go home</a>');
  const T=[['users','Users'],['posts','Posts'],['ads','Sponsored'],['set','Settings']];let b='';
- if(S.adm==='users'){const{data}=await sb.from('profiles').select(PCOLS).order('created_at',{ascending:false}).limit(200);
-  b=(data||[]).map(u=>userRow(u,`<span class="pill">${u.role}</span><span class="mu">${new Date(u.created_at).toLocaleDateString([],{day:'numeric',month:'short',year:'2-digit'})}</span>`)).join('')}
- else if(S.adm==='posts')b=`<div id="feed"></div><div id="sentinel"><div class="spin"></div></div>`;
- else if(S.adm==='ads'){const{data}=await sb.from('ads').select('*').order('created_at',{ascending:false});S.adimg=null;
-  b=`<form class="card" data-form="ad"><b>New sponsored ad</b><label class="f" for="an">Business name</label><input class="in" id="an" name="n" maxlength="40" required><label class="f" for="ad">Short description</label><input class="in" id="ad" name="d" maxlength="120"><label class="f" for="al">Link (optional, must start with https://)</label><input class="in" id="al" name="l" type="url" placeholder="https://"><label class="f">Image</label><div id="adprev"></div><label class="btn sec sm">Choose image<input type="file" accept="image/jpeg,image/png,image/webp" data-file="ad" hidden></label><div class="err" id="err"></div><button class="btn full" id="adbtn">Publish ad</button></form>`+
-  ((data||[]).map(a=>`<div class="row"><img src="${esc(a.image_url)}" alt="" width="64" height="32" style="border-radius:6px;object-fit:cover"><div class="grow"><b class="ellip" style="display:block">${esc(a.name)}</b><span class="pill ${a.published?'on':''}">${a.published?'Published':'Hidden'}</span></div><button class="btn gray sm" data-act="admpub" data-id="${a.id}" data-on="${a.published}">${a.published?'Unpublish':'Publish'}</button><button class="ghost" data-act="admad" data-id="${a.id}" aria-label="Delete ad">${ic('trash',18)}</button></div>`).join('')||'<p class="mu" style="padding:10px 0">No ads yet.</p>')}
- else b=`<form class="card" data-form="wa"><b>WhatsApp advertising number</b><p class="mu">International format, digits only. Example: 2348012345678</p><label class="f" for="wn">Number</label><input class="in" id="wn" name="w" value="${esc(S.wa)}" inputmode="numeric" required><div class="err" id="err"></div><button class="btn full">Save number</button></form>`;
- return `<h1>Admin</h1><div class="tabs">${T.map(t=>`<button class="tab ${S.adm===t[0]?'on':''}" data-act="adm" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>${b}`}
+ if(state.adm==='users')b=Object.values(db.users).sort((a,c)=>c.created-a.created).map(u=>userRow(u,`<span class="pill">${u.role}</span>${u.role!=='admin'?`<button class="ghost" data-act="admuser" data-id="${u.id}" aria-label="Remove user">${ic('trash',18)}</button>`:''}`)).join('');
+ else if(state.adm==='posts')b=[...db.posts].sort((a,c)=>c.t-a.t).map(p=>{const u=db.users[p.uid]||{username:'deleted'};return `<div class="row"><div class="grow"><b>${esc(u.username)}</b> <span class="mu">${ago(p.t)}</span><div class="ellip">${esc(p.text||'(photo)')}</div></div><a class="ghost" href="#/p/${p.id}" aria-label="Open">${ic('search',18)}</a><button class="ghost" data-act="delpost" data-id="${p.id}" aria-label="Delete">${ic('trash',18)}</button></div>`}).join('')||empty('No posts');
+ else if(state.adm==='ads')b=`<form class="card" data-form="ad"><b>New sponsored ad</b><label class="f" for="an">Business name</label><input class="in" id="an" name="n" maxlength="40" required><label class="f" for="ad">Short description</label><input class="in" id="ad" name="d" maxlength="120"><label class="f" for="al">Link (optional, must start with https://)</label><input class="in" id="al" name="l" type="url" placeholder="https://"><label class="f">Image</label><div id="adprev"></div><label class="btn sec sm">Choose image<input type="file" accept="image/jpeg,image/png,image/webp" data-file="ad" hidden></label><div class="err" id="err"></div><button class="btn full" id="adbtn">Publish ad</button></form>`+
+  (db.ads.map(a=>`<div class="row"><img src="${a.img.src}" alt="" width="64" height="32" style="border-radius:6px;object-fit:cover"><div class="grow"><b class="ellip" style="display:block">${esc(a.name)}</b><span class="pill ${a.on?'on':''}">${a.on?'Published':'Hidden'}</span></div><button class="btn gray sm" data-act="admpub" data-id="${a.id}">${a.on?'Unpublish':'Publish'}</button><button class="ghost" data-act="admad" data-id="${a.id}" aria-label="Delete ad">${ic('trash',18)}</button></div>`).join('')||'<p class="mu" style="padding:10px 0">No ads yet.</p>');
+ else b=`<form class="card" data-form="wa"><b>WhatsApp advertising number</b><p class="mu">International format, digits only. Example: 2348012345678</p><label class="f" for="wn">Number</label><input class="in" id="wn" name="w" value="${esc(db.settings.wa)}" inputmode="numeric" required><div class="err" id="err"></div><button class="btn full">Save number</button></form>`;
+ return `<h1>Admin</h1><div class="tabs">${T.map(t=>`<button class="tab ${state.adm===t[0]?'on':''}" data-act="adm" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>${b}`}
 };
-const bubble=m=>`<div class="bub ${m.sender===S.me.id?'me':''}" data-id="${m.id}">${esc(m.body)}<small>${clock(m.created_at)}</small></div>`;
-function addBubble(m){const e=$('#msgs');if(!e||e.querySelector('[data-id="'+m.id+'"]'))return;const n=e.querySelector('.none');if(n)n.remove();e.insertAdjacentHTML('beforeend',bubble(m));e.scrollTop=e.scrollHeight}
+function searchRes(){
+ const m=me(),q=state.q.trim().toLowerCase();
+ const L=Object.values(db.users).filter(u=>(!m||u.id!==m.id)&&u.username.toLowerCase().includes(q)).slice(0,30);
+ return (q?'':'<div class="sec-h">People on GistHub</div>')+(L.map(u=>userRow(u)).join('')||empty('No users found',q?'Try a different username.':'Nobody else has joined yet.'))}
+const bubble=x=>`<div class="bub ${x.from===me().id?'me':''}" data-id="${x.id}">${esc(x.text)}<small>${clock(x.t)}</small></div>`;
+const msgsHTML=id=>thread(me().id,id).map(bubble).join('')||'<p class="mu none" style="text-align:center;margin:auto">No messages yet. Say hi.</p>';
+function markRead(id){const m=me();let ch=false;db.msgs.forEach(x=>{if(x.to===m.id&&x.from===id&&!x.read){x.read=true;ch=true}});db.notifs.forEach(n=>{if(n.to===m.id&&n.type==='message'&&n.from===id&&!n.read){n.read=true;ch=true}});if(ch)save()}
 
-/* ---------- hooks (after a page renders) ---------- */
+/* ---------- hooks ---------- */
 const hooks={
-async home(){
- const m=S.me,t=S.tab;let q={},emptyHTML=empty('No posts yet','Be the first to share some gist.'),ads=[];
- if(t==='trending')q={trending:true};
- else if(t==='following'){const ids=friendIds();if(!ids.length){$('#feed').innerHTML=empty('No posts from friends yet','Add friends to see their gist here.','<a class="btn sm" href="#/search">Find people</a>');$('#sentinel').remove();return}q={ids};emptyHTML=empty('No posts from friends yet','Your friends have not posted yet.')}
- else if(t==='mine'){q={user:m.id};emptyHTML=empty('You have not posted yet','Share your first gist above.')}
- if(t!=='mine')ads=await fetchAds().catch(()=>[]);
- if(location.hash&&route().a!=='home')return;
- startFeed(q,'post',emptyHTML,ads)},
-search(){runSearch()},
-u(){const e=$('#pu');if(!e||S.ptab==='friends')return;startFeed({user:e.dataset.uid,photos:S.ptab==='photos'},S.ptab==='photos'?'grid':'post',S.ptab==='photos'?empty('No photos yet'):empty('No posts yet'))},
-async admin(){if(S.adm==='posts')startFeed({},'admin',empty('No posts'))},
-async notifs(){await sb.from('notifications').update({read:true}).eq('user_id',S.me.id).eq('read',false);refreshCounts()},
-async chat(id){const e=$('#msgs');if(e)e.scrollTop=e.scrollHeight;
- await sb.from('messages').update({read:true}).eq('sender',id).eq('recipient',S.me.id).eq('read',false);
- await sb.from('notifications').update({read:true}).eq('user_id',S.me.id).eq('type','message').eq('actor_id',id).eq('read',false);refreshCounts()}
+home(){state.items=withAds(feedList());state.n=0;more();const s=$('#sentinel');if(s&&'IntersectionObserver'in window){io=new IntersectionObserver(e=>{if(e[0].isIntersecting)more()},{rootMargin:'500px'});io.observe(s)}else if(s){while(state.n<state.items.length)more()}},
+notifs(){const m=me();db.notifs.forEach(n=>{if(n.to===m.id)n.read=true});save()},
+chat(id){markRead(id);const e=$('#msgs');if(e)e.scrollTop=e.scrollHeight}
 };
 
 /* ---------- chrome ---------- */
 function chrome(){
- const m=S.me,c=S.cnt,{a,b}=route(),own=m?'#/u/'+encodeURIComponent(m.username):'#/auth';
+ const m=me(),c=counts(),{a,b}=route(),own=m?'#/u/'+encodeURIComponent(m.username):'#/auth';
  const on={home:a==='home',search:a==='search',post:a==='post',chats:a==='chats'||a==='chat',prof:a==='u'&&m&&b===m.username};
  $('#bottom').innerHTML=`<a class="${on.home?'on':''}" href="#/home">${ic('home')}Home</a><a class="${on.search?'on':''}" href="#/search">${ic('search')}Search</a><a class="pl" href="${m?'#/post':'#/auth'}" aria-label="Post"><span class="c">${ic('plus',24)}</span></a><a class="${on.chats?'on':''}" href="${m?'#/chats':'#/auth'}">${ic('chat')}Chats${bd(c.c)}</a><a class="${on.prof?'on':''}" href="${own}">${ic('user')}Profile</a>`;
  $('#top').innerHTML=`<a class="logo" href="#/home">GistHub</a><div class="tr"><button class="adbtn" data-act="adv">Advertise</button><a class="ib" href="${m?'#/friends':'#/auth'}" aria-label="Friends">${ic('users')}${bd(c.f)}</a><a class="ib" href="${m?'#/notifs':'#/auth'}" aria-label="Notifications">${ic('bell')}${bd(c.n)}</a></div>`;
  const sl=(h,i,t,o,n)=>`<a class="sl ${o?'on':''}" href="${h}">${ic(i)}${t}${bd(n)}</a>`;
  $('#side').innerHTML=`<a class="logo" href="#/home">GistHub</a>${sl('#/home','home','Home',on.home)}${sl('#/search','search','Search',on.search)}${sl(m?'#/post':'#/auth','plus','Post',on.post)}${sl(m?'#/chats':'#/auth','chat','Chats',on.chats,c.c)}${sl(own,'user','Profile',on.prof)}${sl(m?'#/friends':'#/auth','users','Friends',a==='friends',c.f)}${sl(m?'#/notifs':'#/auth','bell','Notifications',a==='notifs',c.n)}<button class="sl" data-act="adv">${ic('mega')}Advertise With Us</button>${m&&m.role==='admin'?sl('#/admin','shield','Admin',a==='admin'):''}<div class="sp"></div>${m?`<button class="sl" data-act="logout">${ic('out')}Log out</button>`:`<a class="btn" href="#/auth" style="margin:0 14px">Log in</a>`}`}
-async function refreshCounts(){
- if(!S.me){S.cnt={n:0,c:0,f:0};chrome();return}
- try{const[n,c]=await Promise.all([sb.from('notifications').select('id',{count:'exact',head:true}).eq('user_id',S.me.id).eq('read',false),sb.from('messages').select('id',{count:'exact',head:true}).eq('recipient',S.me.id).eq('read',false)]);
- S.cnt.n=n.count||0;S.cnt.c=c.count||0}catch(e){}
- S.cnt.f=S.fr.filter(f=>f.status==='pending'&&f.addressee===S.me.id).length;chrome()}
 
 /* ---------- render ---------- */
-async function render(){
- const tok=++rtok;if(io){io.disconnect();io=null}feed=null;chatInfo=null;
- const m=S.me,{a,b}=route(),changed=location.hash!==lastKey;
+function render(){
+ if(io){io.disconnect();io=null}
+ const m=me(),{a,b}=route(),changed=location.hash!==lastKey;
+ if(getSession()&&!m)try{localStorage.removeItem(SKEY)}catch(e){}
  if(['post','chats','chat','friends','notifs','edit'].includes(a)&&!m){location.hash='#/auth';return}
  if(a==='auth'&&m){location.hash='#/home';return}
- if(changed){if(a==='u')S.ptab='posts';if(a!=='search')S.q='';lastKey=location.hash;window.scrollTo(0,0)}
- const P=pages[a]||pages.home,v=$('#view');
- document.body.classList.toggle('chatting',a==='chat');
- if(changed&&P.constructor.name==='AsyncFunction')v.innerHTML='<div class="spin" aria-label="Loading"></div>';
+ if(changed){if(a==='u')state.ptab='posts';if(a!=='search')state.q='';lastKey=location.hash}
+ const P=pages[a]||pages.home;
+ $('#view').innerHTML=P(b);
+ if(hooks[a])hooks[a](b);
  chrome();
- let html;try{html=await P(b)}catch(e){html=empty('Something went wrong',esc(errMsg(e)),'<button class="btn sm" data-act="retry">Try again</button>')}
- if(tok!==rtok)return;
- v.innerHTML=html;
- if(hooks[a]){try{await hooks[a](b)}catch(e){toast(errMsg(e))}}
+ document.body.classList.toggle('chatting',a==='chat');
+ if(changed)window.scrollTo(0,0);
 }
 
-/* ---------- realtime ---------- */
-function teardown(){if(S.ch){sb.removeChannel(S.ch);S.ch=null}}
-function subscribe(){
- teardown();const id=S.me.id;
- S.ch=sb.channel('gh-'+id)
- .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:'recipient=eq.'+id},onMsg)
- .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:'sender=eq.'+id},onMsg)
- .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+id},onNotif)
- .on('postgres_changes',{event:'INSERT',schema:'public',table:'friendships',filter:'addressee=eq.'+id},onFr)
- .on('postgres_changes',{event:'UPDATE',schema:'public',table:'friendships',filter:'requester=eq.'+id},onFr)
- .subscribe()}
-async function onMsg(pl){
- const m=pl.new;if(!m||!S.me||seenMsg.has(m.id))return;seenMsg.add(m.id);
- const other=m.sender===S.me.id?m.recipient:m.sender,r=route();
- if(r.a==='chat'&&r.b===other){addBubble(m);
-  if(m.recipient===S.me.id){await sb.from('messages').update({read:true}).eq('id',m.id);await sb.from('notifications').update({read:true}).eq('user_id',S.me.id).eq('type','message').eq('actor_id',other).eq('read',false)}
-  refreshCounts();return}
- if(m.recipient===S.me.id){await loadProfiles([other]);toast((PC[other]?PC[other].username:'Someone')+' sent you a message')}
- await refreshCounts();if(r.a==='chats')render()}
-async function onNotif(){await refreshCounts();if(route().a==='notifs')render()}
-async function onFr(){await refreshFr();await refreshCounts();if(['friends','search','u','chats'].includes(route().a))render()}
-
-/* ---------- session ---------- */
-async function afterLogin(user){
- const{data,error}=await sb.from('profiles').select(PCOLS).eq('id',user.id).maybeSingle();
- if(error||!data){await sb.auth.signOut();throw error||new Error('Profile not found. Run schema.sql, then sign up again.')}
- S.me=data;PC[data.id]=data;await refreshFr();subscribe();refreshCounts()}
-sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT'&&S.me){S.me=null;S.fr=[];S.cnt={n:0,c:0,f:0};setTimeout(()=>{teardown();render()},0)}});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.me)refreshCounts()});
-
-/* ---------- actions (clicks) ---------- */
+/* ---------- actions ---------- */
+function openWA(text){if(!db.settings.wa){const m=me();toast(m&&m.role==='admin'?'Set the WhatsApp number in Admin > Settings first.':'Advertising contact is not set up yet.');return}window.open(waLink(text),'_blank','noopener')}
 const actions={
-tab(t){const v=t.dataset.v;if((v==='following'||v==='mine')&&!S.me)return needLogin();S.tab=v;render()},
-ptab(t){S.ptab=t.dataset.v;render()},
-adm(t){S.adm=t.dataset.v;render()},
-mode(){S.mode=S.mode==='login'?'signup':'login';render()},
-retry(){if(feed&&feed.err){feed.err=false;loadMore()}else render()},
-async like(t){if(!S.me)return needLogin();const id=t.dataset.id,p=POSTS[id];if(!p)return;
- const was=p.liked;p.liked=!was;p.likes+=was?-1:1;refreshPost(id);
- const{error}=was?await sb.from('likes').delete().eq('post_id',id).eq('user_id',S.me.id):await sb.from('likes').insert({post_id:id,user_id:S.me.id});
- if(error){p.liked=was;p.likes+=was?1:-1;refreshPost(id);toast(errMsg(error))}},
-share(t){const url=location.origin+location.pathname+'#/p/'+t.dataset.id;
+tab(t){const v=t.dataset.v;if((v==='following'||v==='mine')&&!me())return needLogin();state.tab=v;render()},
+ptab(t){state.ptab=t.dataset.v;render()},
+adm(t){state.adm=t.dataset.v;render()},
+mode(){state.mode=state.mode==='login'?'signup':'login';render()},
+like(t){const m=me();if(!m)return needLogin();const id=t.dataset.id,p=db.posts.find(x=>x.id===id);if(!p)return;
+ const i=db.likes.findIndex(l=>l.pid===id&&l.uid===m.id);if(i>=0)db.likes.splice(i,1);else{db.likes.push({pid:id,uid:m.id});if(!db.notifs.some(n=>n.type==='like'&&n.ref===id&&n.from===m.id))notify(p.uid,'like',m.id,id)}save();refreshPost(id);chrome()},
+share(t){const url=location.href.split('#')[0]+'#/p/'+t.dataset.id;
  if(navigator.share)navigator.share({title:'GistHub',url}).catch(()=>{});
  else if(navigator.clipboard)navigator.clipboard.writeText(url).then(()=>toast('Link copied'),()=>prompt('Copy this link',url));else prompt('Copy this link',url)},
-async delpost(t){if(!confirm('Delete this post?'))return;const id=t.dataset.id,p=POSTS[id];
- const{error}=await sb.from('posts').delete().eq('id',id);if(error)return toast(errMsg(error));
- if(p&&p.image_url){const a=storagePath(p.image_url,'posts'),b=storagePath(p.thumb_url,'posts');sb.storage.from('posts').remove([a,b].filter(Boolean))}
- delete POSTS[id];toast('Post deleted');if(route().a==='p')location.hash='#/home';else render()},
-async delcomment(t){const{error}=await sb.from('comments').delete().eq('id',t.dataset.id);if(error)return toast(errMsg(error));render()},
-rmimg(){S.img=null;$('#prev').innerHTML=''},
-async addfriend(t){if(!S.me)return needLogin();const id=t.dataset.id;if(frOf(id))return;
- const{error}=await sb.from('friendships').insert({requester:S.me.id,addressee:id,status:'pending'});if(error)return toast(errMsg(error));
- await refreshFr();render();toast('Friend request sent')},
-async cancelreq(t){const f=frOf(t.dataset.id);if(!f)return;const{error}=await sb.from('friendships').delete().eq('id',f.id);if(error)return toast(errMsg(error));await refreshFr();refreshCounts();render()},
-async accept(t){const f=frOf(t.dataset.id);if(!f)return;const{error}=await sb.from('friendships').update({status:'accepted'}).eq('id',f.id);if(error)return toast(errMsg(error));await refreshFr();refreshCounts();render();toast('You are now friends')},
-async reject(t){const f=frOf(t.dataset.id);if(!f)return;const{error}=await sb.from('friendships').delete().eq('id',f.id);if(error)return toast(errMsg(error));await refreshFr();refreshCounts();render()},
-async unfriend(t){if(!confirm('Remove this friend?'))return;const f=frOf(t.dataset.id);if(!f)return;const{error}=await sb.from('friendships').delete().eq('id',f.id);if(error)return toast(errMsg(error));await refreshFr();render()},
-async logout(){teardown();await sb.auth.signOut();S.me=null;S.fr=[];S.cnt={n:0,c:0,f:0};location.hash='#/home';render();toast('Logged out')},
-adv(){window.open(waLink("Hello, I'd like to know about advertising packages on GistHub."),'_blank','noopener')},
-adwa(t){window.open(waLink('Hello, I saw the '+t.dataset.name+' ad on GistHub and I would like to know more.'),'_blank','noopener')},
-async older(t){if(!chatInfo||!chatInfo.oldest)return;const id=chatInfo.id;t.disabled=true;
- const{data,error}=await sb.from('messages').select('*').or('and(sender.eq.'+S.me.id+',recipient.eq.'+id+'),and(sender.eq.'+id+',recipient.eq.'+S.me.id+')').lt('created_at',chatInfo.oldest).order('created_at',{ascending:false}).limit(60);
- if(error){t.disabled=false;return toast(errMsg(error))}
- const list=(data||[]).reverse();list.forEach(m=>seenMsg.add(m.id));if(list[0])chatInfo.oldest=list[0].created_at;
- t.insertAdjacentHTML('afterend',list.map(bubble).join(''));if((data||[]).length<60)t.remove();else t.disabled=false},
-async admpub(t){if(!S.me||S.me.role!=='admin')return;const{error}=await sb.from('ads').update({published:t.dataset.on!=='true'}).eq('id',t.dataset.id);if(error)return toast(errMsg(error));render()},
-async admad(t){if(!S.me||S.me.role!=='admin'||!confirm('Delete this ad?'))return;const{data}=await sb.from('ads').select('image_url').eq('id',t.dataset.id).maybeSingle();
- const{error}=await sb.from('ads').delete().eq('id',t.dataset.id);if(error)return toast(errMsg(error));
- const p=data&&storagePath(data.image_url,'ads');if(p)sb.storage.from('ads').remove([p]);render()}
+delpost(t){if(!confirm('Delete this post?'))return;const id=t.dataset.id;db.posts=db.posts.filter(p=>p.id!==id);db.comments=db.comments.filter(c=>c.pid!==id);db.likes=db.likes.filter(l=>l.pid!==id);db.notifs=db.notifs.filter(n=>n.ref!==id);save();toast('Post deleted');if(route().a==='p')location.hash='#/home';else render()},
+delcomment(t){db.comments=db.comments.filter(c=>c.id!==t.dataset.id);save();render()},
+rmimg(){state.img=null;$('#prev').innerHTML=''},
+addfriend(t){const m=me();if(!m)return needLogin();const id=t.dataset.id;if(fr(m.id,id))return;db.friends.push({id:uid(),from:m.id,to:id,status:'pending',t:now()});notify(id,'friend_request',m.id);save();render();toast('Friend request sent')},
+cancelreq(t){const m=me(),f=fr(m.id,t.dataset.id);if(f&&f.from===m.id&&f.status==='pending'){db.friends=db.friends.filter(x=>x!==f);db.notifs=db.notifs.filter(n=>!(n.type==='friend_request'&&n.from===m.id&&n.to===t.dataset.id));save();render()}},
+accept(t){const m=me(),f=fr(m.id,t.dataset.id);if(f&&f.to===m.id&&f.status==='pending'){f.status='accepted';notify(f.from,'friend_accept',m.id);save();render();toast('You are now friends')}},
+reject(t){const m=me(),f=fr(m.id,t.dataset.id);if(f&&f.to===m.id&&f.status==='pending'){db.friends=db.friends.filter(x=>x!==f);save();render()}},
+unfriend(t){if(!confirm('Remove this friend?'))return;const m=me(),f=fr(m.id,t.dataset.id);if(f){db.friends=db.friends.filter(x=>x!==f);save();render()}},
+logout(){try{localStorage.removeItem(SKEY)}catch(e){}location.hash='#/home';render();toast('Logged out')},
+adv(){openWA("Hello, I'd like to know about advertising packages on GistHub.")},
+adwa(t){openWA('Hello, I saw the '+t.dataset.name+' ad on GistHub and I would like to know more.')},
+admpub(t){const m=me();if(!m||m.role!=='admin')return;const a=db.ads.find(x=>x.id===t.dataset.id);if(a){a.on=!a.on;save();render()}},
+admad(t){const m=me();if(!m||m.role!=='admin'||!confirm('Delete this ad?'))return;db.ads=db.ads.filter(x=>x.id!==t.dataset.id);save();render()},
+admuser(t){const m=me();if(!m||m.role!=='admin')return;const u=db.users[t.dataset.id];if(!u||u.role==='admin'||!confirm('Remove '+u.username+' and all their content?'))return;
+ const id=u.id;delete db.users[id];const ps=db.posts.filter(p=>p.uid===id).map(p=>p.id);db.posts=db.posts.filter(p=>p.uid!==id);db.comments=db.comments.filter(c=>c.uid!==id&&!ps.includes(c.pid));db.likes=db.likes.filter(l=>l.uid!==id&&!ps.includes(l.pid));db.friends=db.friends.filter(f=>f.from!==id&&f.to!==id);db.msgs=db.msgs.filter(x=>x.from!==id&&x.to!==id);db.notifs=db.notifs.filter(n=>n.from!==id&&n.to!==id);save();render()}
 };
 document.addEventListener('click',e=>{
  const t=e.target.closest('[data-act]');
@@ -498,75 +392,64 @@ document.addEventListener('click',e=>{
 
 /* ---------- forms ---------- */
 const USERNAME=/^[A-Za-z0-9_]{3,20}$/;
-function busy(btn,on,label){if(!btn)return;btn.disabled=on;if(label)btn.textContent=label}
 const forms={
-async post(f){if(!S.me)return needLogin();if(S.busy)return;const text=f.t.value.trim();if(!text&&!S.img)return toast('Write something or add a photo.');
- S.busy=true;const btn=$('#pbtn');busy(btn,true,'Posting...');
- try{let image_url=null,thumb_url=null,w=null,h=null;
-  if(S.img){const base=S.me.id+'/'+Date.now();[image_url,thumb_url]=await Promise.all([upload('posts',base+'.jpg',S.img.main.blob),upload('posts',base+'_t.jpg',S.img.th.blob)]);w=S.img.main.w;h=S.img.main.h}
-  const{error}=await sb.from('posts').insert({user_id:S.me.id,body:text||null,image_url,thumb_url,image_w:w,image_h:h});if(error)throw error;
-  S.img=null;S.tab='latest';navTo('#/home');toast('Posted')}
- catch(e){toast(errMsg(e));busy(btn,false,'Post')}finally{S.busy=false}},
-async comment(f){const text=f.t.value.trim();if(!S.me||!text)return;f.t.value='';
- const{error}=await sb.from('comments').insert({post_id:f.dataset.id,user_id:S.me.id,body:text});if(error){f.t.value=text;return toast(errMsg(error))}render()},
-async chat(f){const id=f.dataset.id,text=f.t.value.trim();if(!text)return;f.t.value='';
- const{data,error}=await sb.from('messages').insert({sender:S.me.id,recipient:id,body:text}).select().single();
- if(error){f.t.value=text;return toast(errMsg(error))}seenMsg.add(data.id);addBubble(data)},
-async auth(f){const err=$('#err'),btn=$('#abtn'),email=f.e.value.trim().toLowerCase(),p=f.p.value;err.textContent='';err.className='err';
+post(f){const m=me();if(!m)return needLogin();const text=f.t.value.trim();if(!text&&!state.img)return toast('Write something or add a photo.');
+ const p={id:uid(),uid:m.id,text,img:state.img?{src:state.img.src,th:state.img.th,w:state.img.w,h:state.img.h}:null,t:now()};
+ db.posts.unshift(p);if(!save()){db.posts.shift();return}
+ state.img=null;state.tab='latest';navTo('#/home');toast('Posted')},
+comment(f){const m=me(),text=f.t.value.trim();if(!m||!text)return;const id=f.dataset.id,p=db.posts.find(x=>x.id===id);if(!p)return;
+ db.comments.push({id:uid(),pid:id,uid:m.id,text,t:now()});notify(p.uid,'comment',m.id,id);save();render()},
+chat(f){const m=me(),id=f.dataset.id,text=f.t.value.trim();if(!m||!text||!friendIds(m.id).includes(id))return;
+ const x={id:uid(),from:m.id,to:id,text,t:now(),read:false};db.msgs.push(x);notify(id,'message',m.id);save();f.t.value='';
+ const e=$('#msgs'),n=e.querySelector('.none');if(n)n.remove();e.insertAdjacentHTML('beforeend',bubble(x));e.scrollTop=e.scrollHeight},
+auth(f){const err=$('#err'),p=f.p.value,email=f.e.value.trim().toLowerCase();err.textContent='';
  if(p.length<6)return err.textContent='Password must be at least 6 characters.';
- busy(btn,true);
- try{
-  if(S.mode==='signup'){const u=f.u.value.trim();
-   if(!USERNAME.test(u)){busy(btn,false);return err.textContent='Username must be 3-20 letters, numbers or underscores.'}
-   const av=await sb.rpc('username_available',{u});if(av.error)throw av.error;if(!av.data){busy(btn,false);return err.textContent='That username is taken. Try another.'}
-   const{data,error}=await sb.auth.signUp({email,password:p,options:{data:{username:u}}});if(error)throw error;
-   if(!data.session){err.className='ok';err.textContent='Account created. Check your email to confirm it, then log in.';S.mode='login';busy(btn,false);return}
-   await afterLogin(data.user);location.hash='#/home';render();toast('Welcome to GistHub, '+u)}
-  else{const{data,error}=await sb.auth.signInWithPassword({email,password:p});if(error)throw error;
-   await afterLogin(data.user);location.hash='#/home';render();toast('Welcome back, '+S.me.username)}
- }catch(e){busy(btn,false);const m=(e&&e.message)||'';
-  err.textContent=/already registered|already been registered/i.test(m)?'That email already has an account. Log in instead.':/invalid login/i.test(m)?'Wrong email or password.':/not confirmed/i.test(m)?'Confirm your email first, then log in.':errMsg(e)}},
-async edit(f){const m=S.me,err=$('#err'),u=f.u.value.trim(),btn=f.querySelector('button.full');err.textContent='';
+ if(state.mode==='signup'){const u=f.u.value.trim();
+  if(!USERNAME.test(u))return err.textContent='Username must be 3-20 letters, numbers or underscores.';
+  if(byName(u))return err.textContent='That username is taken. Try another.';
+  if(Object.values(db.users).some(x=>x.email===email))return err.textContent='That email already has an account. Log in instead.';
+  const id='u_'+uid(),first=!Object.keys(db.users).length;
+  db.users[id]={id,username:u,email,pass:hash(email+':'+p),bio:'',avatar:'',role:first?'admin':'user',created:now()};
+  if(!save()){delete db.users[id];return}
+  localStorage.setItem(SKEY,id);location.hash='#/home';render();toast(first?'Welcome, '+u+'. You are the admin.':'Welcome to GistHub, '+u)}
+ else{const user=Object.values(db.users).find(x=>x.email===email);
+  if(!user||user.pass!==hash(email+':'+p))return err.textContent='Wrong email or password.';
+  localStorage.setItem(SKEY,user.id);location.hash='#/home';render();toast('Welcome back, '+user.username)}},
+edit(f){const m=me(),err=$('#err'),u=f.u.value.trim();err.textContent='';
  if(!USERNAME.test(u))return err.textContent='Username must be 3-20 letters, numbers or underscores.';
- busy(btn,true);
- try{let avatar_url=m.avatar_url;
-  if(S.av)avatar_url=(await upload('avatars',m.id+'/avatar.jpg',S.av.blob,true))+'?v='+Date.now();
-  const{data,error}=await sb.from('profiles').update({username:u,bio:f.b.value.trim().slice(0,160),avatar_url}).eq('id',m.id).select(PCOLS).single();
-  if(error){if(error.code==='23505')throw new Error('That username is taken. Try another.');throw error}
-  S.me=data;PC[m.id]=data;S.av=null;location.hash='#/u/'+encodeURIComponent(u);render();toast('Profile updated')}
- catch(e){busy(btn,false);err.textContent=errMsg(e)}},
-async ad(f){if(!S.me||S.me.role!=='admin')return;const err=$('#err'),n=f.n.value.trim(),l=f.l.value.trim();err.textContent='';
- if(!n)return err.textContent='Enter the business name.';if(!S.adimg)return err.textContent='Choose an image.';
+ const o=byName(u);if(o&&o.id!==m.id)return err.textContent='That username is taken. Try another.';
+ const old={username:m.username,bio:m.bio,avatar:m.avatar};
+ m.username=u;m.bio=f.b.value.trim().slice(0,160);if(state.av)m.avatar=state.av.src;
+ if(!save()){Object.assign(m,old);return}
+ state.av=null;location.hash='#/u/'+encodeURIComponent(u);render();toast('Profile updated')},
+ad(f){const m=me(),err=$('#err');if(!m||m.role!=='admin')return;const n=f.n.value.trim(),l=f.l.value.trim();err.textContent='';
+ if(!n)return err.textContent='Enter the business name.';if(!state.adimg)return err.textContent='Choose an image.';
  if(l&&!/^https:\/\//i.test(l))return err.textContent='Link must start with https://';
- const btn=$('#adbtn');busy(btn,true,'Publishing...');
- try{const url=await upload('ads',Date.now()+'.jpg',S.adimg.blob);
-  const{error}=await sb.from('ads').insert({name:n,description:f.d.value.trim(),link:l||null,image_url:url,image_w:S.adimg.w,image_h:S.adimg.h,published:true});if(error)throw error;
-  S.adimg=null;render();toast('Ad published')}catch(e){busy(btn,false,'Publish ad');err.textContent=errMsg(e)}},
-async wa(f){if(!S.me||S.me.role!=='admin')return;const err=$('#err'),d=f.w.value.replace(/\D/g,'');
- if(d.length<10||d.length>15)return err.textContent='Enter a valid number with country code.';
- const{error}=await sb.from('settings').upsert({key:'whatsapp',value:d});if(error)return err.textContent=errMsg(error);S.wa=d;err.textContent='';toast('Number saved')}
+ db.ads.unshift({id:uid(),name:n,desc:f.d.value.trim(),link:l,img:state.adimg,on:true,t:now()});if(!save()){db.ads.shift();return}state.adimg=null;render();toast('Ad published')},
+wa(f){const m=me(),err=$('#err');if(!m||m.role!=='admin')return;const d=f.w.value.replace(/\D/g,'');
+ if(d.length<10||d.length>15)return err.textContent='Enter a valid number with country code.';db.settings.wa=d;save();err.textContent='';toast('Number saved')}
 };
 document.addEventListener('submit',e=>{const f=e.target.closest('form[data-form]');if(!f)return;e.preventDefault();const fn=forms[f.dataset.form];if(fn)fn(f)});
-document.addEventListener('input',e=>{if(e.target.id==='q'){S.q=e.target.value;clearTimeout(sTimer);sTimer=setTimeout(runSearch,250)}});
+document.addEventListener('input',e=>{if(e.target.id==='q'){state.q=e.target.value;$('#sres').innerHTML=searchRes()}});
 document.addEventListener('change',async e=>{
  const i=e.target.closest('input[data-file]');if(!i||!i.files[0])return;const k=i.dataset.file,file=i.files[0];
  try{
-  if(k==='post'){const[main,th]=await Promise.all([shrink(file,900,.65),shrink(file,240,.6)]);S.img={main,th};$('#prev').innerHTML=prevHTML()}
-  else if(k==='avatar'){S.av=await shrink(file,160,.75,true);$('#avprev').innerHTML=`<img class="av lg" src="${S.av.url}" alt="">`}
-  else if(k==='ad'){S.adimg=await shrink(file,800,.7);$('#adprev').innerHTML=`<img class="pimg" src="${S.adimg.url}" alt="" style="max-height:120px;width:auto">`}
- }catch(err){toast(errMsg(err))}
+  if(k==='post'){const main=await shrink(file,900,.62);main.th=(await shrink(file,240,.6)).src;state.img=main;$('#prev').innerHTML=prevHTML()}
+  else if(k==='avatar'){state.av=await shrink(file,160,.75,true);$('#avprev').innerHTML=`<img class="av lg" src="${state.av.src}" alt="">`}
+  else if(k==='ad'){state.adimg=await shrink(file,800,.7);$('#adprev').innerHTML=`<img class="pimg" src="${state.adimg.src}" alt="" style="max-height:120px;width:auto">`}
+ }catch(err){toast(String(err))}
  i.value=''});
 
-/* ---------- start ---------- */
-(async()=>{
- try{
-  const[{data:{session}},st]=await Promise.all([sb.auth.getSession(),sb.from('settings').select('value').eq('key','whatsapp').maybeSingle()]);
-  if(st&&st.data)S.wa=st.data.value;
-  if(session)await afterLogin(session.user);
- }catch(e){toast(errMsg(e))}
- window.addEventListener('hashchange',render);
- render();
-})();
+/* other tabs on the same device (live updates) */
+window.addEventListener('storage',e=>{
+ if(e.key===SKEY){render();return}
+ if(e.key!==KEY)return;db=load();const r=route(),m=me();
+ if(!m){render();return}
+ if(r.a==='chat'){const box=$('#msgs');if(box){markRead(r.b);box.innerHTML=msgsHTML(r.b);box.scrollTop=box.scrollHeight}chrome();return}
+ const typing=document.activeElement&&/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+ if(typing)chrome();else render()});
+window.addEventListener('hashchange',render);
+render();
 })();
 </script>
 </body>
